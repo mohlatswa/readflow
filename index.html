@@ -502,7 +502,9 @@ function finishRecording(){ const blob=new Blob(chunks,{type:chunks[0]?.type||'v
    Wiring
    ========================================================================= */
 const fileInput=$('file'), drop=$('drop');
-drop.addEventListener('click',()=>fileInput.click());
+/* NOTE: #file lives inside the <label id="drop">, so clicking the drop zone already
+   opens the picker natively. Don't also call fileInput.click() — that double-fires the
+   dialog in Chrome/Edge and the browser cancels it, breaking upload. */
 fileInput.addEventListener('change',e=>{ handleFiles(e.target.files); fileInput.value=''; });
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
