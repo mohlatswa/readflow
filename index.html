@@ -63,6 +63,8 @@
   button.btn:hover:not(:disabled){border-color:var(--accent)}
   button.btn:disabled{opacity:.4;cursor:not-allowed}
   button.rec{background:var(--danger);border-color:var(--danger);color:#fff}
+  button.play.on{background:var(--accent2);border-color:var(--accent2);color:#06231a;font-weight:600}
+  #paceRange{width:120px}
   .counter{color:var(--muted);font-variant-numeric:tabular-nums;min-width:64px;text-align:center}
   .spacer{flex:1}
   .status{font-size:13px;color:var(--muted)} .status.good{color:var(--accent2)}
@@ -147,11 +149,12 @@
     </div>
 
     <div class="controls">
-      <button class="btn" id="prev" disabled>◀ Prev</button>
+      <button class="btn play" id="play" disabled title="Auto-flow the words while you read (Space)">▶ Play</button>
+      <button class="btn" id="prev" disabled title="Previous (←)">◀</button>
       <span class="counter" id="counter">0 / 0</span>
-      <button class="btn" id="next" disabled>Next ▶</button>
-      <button class="btn" id="replay" disabled title="Replay the word animation">↻ Replay</button>
-      <span class="kbd">← → arrow keys</span>
+      <button class="btn" id="next" disabled title="Next (→)">▶</button>
+      <span class="kbd">Pace</span>
+      <input type="range" id="paceRange" min="60" max="200" value="130" title="Reading pace — slide left for slower, right for faster">
       <span class="spacer"></span>
       <select id="micSelect" title="Microphone"></select>
       <button class="btn rec" id="record" disabled>● Record</button>
@@ -194,7 +197,7 @@ const $=id=>document.getElementById(id);
 const stage=$('stageCanvas'), sctx=stage.getContext('2d');
 const slidesEl=$('slides'), flowCount=$('flowCount');
 const counter=$('counter'), emptyHint=$('emptyHint');
-const prevBtn=$('prev'), nextBtn=$('next'), replayBtn=$('replay');
+const prevBtn=$('prev'), nextBtn=$('next'), playBtn=$('play');
 const recordBtn=$('record'), stopBtn=$('stop');
 const statusEl=$('status'), dlEl=$('dl');
 const recBadge=$('recBadge'), recTime=$('recTime'), micSelect=$('micSelect');
@@ -445,18 +448,34 @@ function renderFlow(){
     meta.innerHTML=`<div class="t">${i+1}. ${escapeHtml(slideLabel(s))}</div><div class="s">${escapeHtml(s.source||'')}</div>`;
     const ops=document.createElement('div'); ops.className='ops'; ops.innerHTML=`<button title="Up">▲</button><button title="Down">▼</button><button title="Remove">✕</button>`;
     const [up,down,del]=ops.querySelectorAll('button'); up.onclick=e=>{e.stopPropagation();move(i,-1);}; down.onclick=e=>{e.stopPropagation();move(i,1);}; del.onclick=e=>{e.stopPropagation();remove(i);};
-    row.onclick=()=>{ current=i; refreshUI(); }; row.append(thumb,meta,ops); slidesEl.append(row); });
+    row.onclick=()=>{ current=i; slideEnterAt=performance.now(); animFor=current; refreshUI(); if(playing) scheduleNext(); }; row.append(thumb,meta,ops); slidesEl.append(row); });
 }
 function move(i,dir){ const j=i+dir; if(j<0||j>=slides.length) return; [slides[i],slides[j]]=[slides[j],slides[i]]; if(current===i) current=j; else if(current===j) current=i; refreshUI(); }
 function remove(i){ slides.splice(i,1); if(current>=slides.length) current=Math.max(0,slides.length-1); refreshUI(); }
-function go(dir){ const n=current+dir; if(n<0||n>=slides.length) return; current=n; refreshUI(); }
-function replay(){ slideEnterAt=performance.now(); animFor=current; }
+function go(dir){ const n=current+dir; if(n<0||n>=slides.length) return; current=n; slideEnterAt=performance.now(); animFor=current; refreshUI(); if(playing) scheduleNext(); }
+
+/* ---- Auto-flow: words advance on their own at a reading pace so you just read ---- */
+let playing=false, flowTimer=null, paceWPM=130;
+function slideWordCount(s){ if(s.kind==='caption') return s.text.split(/\s+/).filter(Boolean).length;
+  let n=s.title?s.title.split(/\s+/).filter(Boolean).length:0; s.lines.forEach(ln=>{ if(ln) n+=ln.length; }); return n; }
+function slideReadMs(s){ const words=slideWordCount(s); const sec=words/(paceWPM/60)+1.0; return Math.max(2000, sec*1000); }
+function scheduleNext(){ clearTimeout(flowTimer); if(!playing) return; const s=slides[current]; if(!s) return;
+  flowTimer=setTimeout(()=>{ if(!playing) return;
+    if(current<slides.length-1){ current++; slideEnterAt=performance.now(); animFor=current; refreshUI(); scheduleNext(); }
+    else { stopFlow(); if(recording) setStatus('Last slide — press ■ Stop when you finish reading.'); }
+  }, slideReadMs(s)); }
+function startFlow(){ if(!slides.length) return; playing=true; slideEnterAt=performance.now(); animFor=current; updatePlayBtn(); scheduleNext(); }
+function stopFlow(){ playing=false; clearTimeout(flowTimer); updatePlayBtn(); }
+function toggleFlow(){ playing?stopFlow():startFlow(); }
+function updatePlayBtn(){ playBtn.textContent=playing?'⏸ Pause':'▶ Play'; playBtn.classList.toggle('on',playing); }
+
 function refreshUI(){
   renderFlow(); emptyHint.style.display=slides.length?'none':'block';
   counter.textContent=`${slides.length?current+1:0} / ${slides.length}`;
   const has=slides.length>0;
-  prevBtn.disabled=!has||current===0||recording; nextBtn.disabled=!has||current===slides.length-1||recording;
-  replayBtn.disabled=!has; recordBtn.disabled=!has||recording;
+  if(!has&&playing) stopFlow();
+  prevBtn.disabled=!has||current===0; nextBtn.disabled=!has||current===slides.length-1;
+  playBtn.disabled=!has; recordBtn.disabled=!has||recording;
 }
 
 /* =========================================================================
@@ -492,9 +511,10 @@ async function startRecording(){
   recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); }; recorder.onstop=finishRecording;
   slideEnterAt=performance.now(); animFor=current;
   recording=true; recStart=Date.now(); recorder.start(1000); recBadge.classList.add('on'); stopBtn.disabled=false; micSelect.disabled=true; dlEl.style.display='none';
-  setStatus('Recording… use ← → to advance through your text while you read.'); refreshUI();
+  refreshUI(); startFlow();
+  setStatus('Recording — just read aloud, the words flow on their own. ⏸ Pause or ← → to take over.');
 }
-function stopRecording(){ if(!recording) return; recording=false; recBadge.classList.remove('on'); try{ recorder.stop(); }catch(e){} if(music.el){ try{music.el.pause();}catch(e){} } if(music.gain){ try{music.gain.disconnect();}catch(e){} } if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; } stopBtn.disabled=true; micSelect.disabled=false; refreshUI(); }
+function stopRecording(){ if(!recording) return; recording=false; stopFlow(); recBadge.classList.remove('on'); try{ recorder.stop(); }catch(e){} if(music.el){ try{music.el.pause();}catch(e){} } if(music.gain){ try{music.gain.disconnect();}catch(e){} } if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; } stopBtn.disabled=true; micSelect.disabled=false; refreshUI(); }
 function finishRecording(){ const blob=new Blob(chunks,{type:chunks[0]?.type||'video/webm'}); const url=URL.createObjectURL(blob); const stamp=new Date().toISOString().slice(0,16).replace(/[:T]/g,'-'); const mb=(blob.size/1048576).toFixed(1);
   dlEl.innerHTML=`✅ Video ready (${mb} MB) — <a href="${url}" download="readflow-${FMT}-${stamp}.webm">download .webm</a>`; dlEl.style.display='inline'; setStatus('Recording saved.',true); toast('Video ready — click the download link.'); }
 
@@ -526,8 +546,11 @@ $('txtColor').addEventListener('input',e=>{ TXT.color=e.target.value; });
 $('hlColor').addEventListener('input',e=>{ TXT.highlight=e.target.value; });
 $('upperChk').addEventListener('change',e=>{ TXT.upper=e.target.checked; rebuild(); });
 $('sizeRange').addEventListener('input',e=>{ TXT.sizeScale=e.target.value/100; computeMetrics(); rebuild(); });
-prevBtn.onclick=()=>go(-1); nextBtn.onclick=()=>go(1); replayBtn.onclick=replay; recordBtn.onclick=startRecording; stopBtn.onclick=stopRecording;
-document.addEventListener('keydown',e=>{ if(e.target.tagName==='SELECT'||e.target.tagName==='INPUT') return; if(e.key==='ArrowLeft') go(-1); else if(e.key==='ArrowRight') go(1); });
+prevBtn.onclick=()=>go(-1); nextBtn.onclick=()=>go(1); playBtn.onclick=toggleFlow; recordBtn.onclick=startRecording; stopBtn.onclick=stopRecording;
+$('paceRange').addEventListener('input',e=>{ paceWPM=+e.target.value; if(playing) scheduleNext(); });
+document.addEventListener('keydown',e=>{ if(e.target.tagName==='SELECT'||e.target.tagName==='INPUT') return;
+  if(e.key==='ArrowLeft') go(-1); else if(e.key==='ArrowRight') go(1);
+  else if(e.key===' '&&e.target.tagName!=='BUTTON'){ e.preventDefault(); if(slides.length) toggleFlow(); } });
 
 computeMetrics(); buildBgGrid(); selectNone(); listMics(); refreshUI();
 setStatus('Ready — upload a document to begin.');
